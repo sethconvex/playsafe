@@ -8,10 +8,10 @@ import {
 } from "./utils.mjs";
 
 const USAGE = `
-agent-sandbox uninstall — Remove the sandbox user and watcher service
+playsafe uninstall — Remove the sandbox user and watcher service
 
 Usage:
-  agent-sandbox uninstall
+  playsafe uninstall
 
 Options:
   -h, --help  Show this help
@@ -69,7 +69,7 @@ export async function uninstall(argv) {
 
   // Cleanup
   if (existsSync(PR_REQUEST_DIR)) rmSync(PR_REQUEST_DIR, { recursive: true });
-  const logDir = join(realHome, "Library", "Logs", "agent-sandbox");
+  const logDir = join(realHome, "Library", "Logs", "playsafe");
   if (existsSync(logDir)) rmSync(logDir, { recursive: true });
 
   console.log("\nUninstall complete.");

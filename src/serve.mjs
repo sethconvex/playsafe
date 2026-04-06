@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { PR_REQUEST_DIR, ensureDir } from "./utils.mjs";
 
 const USAGE = `
-agent-sandbox serve — Start the MCP server
+playsafe serve — Start the MCP server
 
 Exposes draft PR creation as MCP tools that coding agents can call directly.
 Uses stdio transport (JSON-RPC over stdin/stdout).
@@ -12,8 +12,8 @@ Uses stdio transport (JSON-RPC over stdin/stdout).
 Configure in your agent's MCP settings:
   {
     "mcpServers": {
-      "agent-sandbox": {
-        "command": "agent-sandbox",
+      "playsafe": {
+        "command": "playsafe",
         "args": ["serve"]
       }
     }
@@ -127,7 +127,7 @@ function handleCreateDraftPr(args) {
           content: [
             {
               type: "text",
-              text: `PR request submitted (ID: ${id}) but timed out waiting for result.\nIs 'agent-sandbox watch' running?\n\nYou can check status later with get_pr_status.`,
+              text: `PR request submitted (ID: ${id}) but timed out waiting for result.\nIs 'playsafe watch' running?\n\nYou can check status later with get_pr_status.`,
             },
           ],
           isError: true,
@@ -174,7 +174,7 @@ async function handleMessage(msg) {
       return jsonRpcResponse(id, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "agent-sandbox", version: "0.1.0" },
+        serverInfo: { name: "playsafe", version: "0.1.0" },
       });
 
     case "notifications/initialized":
@@ -213,7 +213,7 @@ export async function serve(argv) {
     return;
   }
 
-  console.error("[agent-sandbox] MCP server starting on stdio...");
+  console.error("[playsafe] MCP server starting on stdio...");
 
   ensureDir(PR_REQUEST_DIR);
 
@@ -244,22 +244,22 @@ export async function serve(argv) {
 
       try {
         const msg = JSON.parse(body);
-        console.error(`[agent-sandbox] <- ${msg.method || "response"} (id: ${msg.id})`);
+        console.error(`[playsafe] <- ${msg.method || "response"} (id: ${msg.id})`);
 
         const response = await handleMessage(msg);
         if (response) {
           const bytes = Buffer.byteLength(response, "utf8");
           process.stdout.write(`Content-Length: ${bytes}\r\n\r\n${response}`);
-          console.error(`[agent-sandbox] -> response (id: ${msg.id})`);
+          console.error(`[playsafe] -> response (id: ${msg.id})`);
         }
       } catch (err) {
-        console.error(`[agent-sandbox] Error processing message: ${err.message}`);
+        console.error(`[playsafe] Error processing message: ${err.message}`);
       }
     }
   });
 
   process.stdin.on("end", () => {
-    console.error("[agent-sandbox] stdin closed, shutting down.");
+    console.error("[playsafe] stdin closed, shutting down.");
     process.exit(0);
   });
 

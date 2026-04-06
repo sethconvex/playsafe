@@ -9,17 +9,17 @@ import {
 } from "./utils.mjs";
 
 const USAGE = `
-agent-sandbox clone — Clone a repo into a secure sandbox
+playsafe clone — Clone a repo into a secure sandbox
 
 Creates the sandbox user if needed, clones the repo using a read-only PAT,
 and configures MCP so the agent gets a create_draft_pr tool automatically.
 
 Usage:
-  agent-sandbox clone <repo-url>
+  playsafe clone <repo-url>
 
 Examples:
-  agent-sandbox clone https://github.com/owner/repo
-  agent-sandbox clone git@github.com:owner/repo.git
+  playsafe clone https://github.com/owner/repo
+  playsafe clone git@github.com:owner/repo.git
 
 Options:
   --pat       Agent's read-only GitHub PAT (prompted if not provided)
@@ -31,13 +31,13 @@ function getMcpConfig() {
   const nodePath = process.execPath;
   let binPath;
   try {
-    binPath = exec("which agent-sandbox");
+    binPath = exec("which playsafe");
   } catch {
     binPath = process.argv[1];
   }
   return {
     mcpServers: {
-      "agent-sandbox": {
+      "playsafe": {
         command: nodePath,
         args: [binPath, "serve"],
       },
@@ -87,7 +87,7 @@ export async function clone(argv) {
 
   // Escalate to root upfront — we need it for user creation, chown, etc.
   if (!isRoot()) {
-    console.log("agent-sandbox needs sudo to set up the sandbox.\n");
+    console.log("playsafe needs sudo to set up the sandbox.\n");
     await execLive("sudo", [process.execPath, ...process.argv.slice(1)]);
     return;
   }
@@ -102,7 +102,7 @@ export async function clone(argv) {
   } else {
     console.log(`\nCreating sandboxed macOS user '${AGENT_USER}'...`);
     const password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-    exec(`sysadminctl -addUser ${AGENT_USER} -fullName "Sandbox Agent" -password "${password}" -home "${AGENT_HOME}"`);
+    exec(`sysadminctl -addUser ${AGENT_USER} -fullName "Playsafe User" -password "${password}" -home "${AGENT_HOME}"`);
     console.log("  User created.");
   }
 
@@ -124,7 +124,7 @@ export async function clone(argv) {
   const realGit = exec("which git");
   const wrapper = `#!/bin/bash
 REAL_GIT="${realGit}"
-BRANCH_PREFIX="sandbox/${realUser}"
+BRANCH_PREFIX="playsafe/${realUser}"
 
 # Intercept branch creation — enforce prefix
 # git checkout -b <name> or git switch -c <name>
@@ -203,7 +203,7 @@ REQEOF
     ELAPSED=$((ELAPSED + 1))
   done
 
-  echo "Timed out waiting for PR creation. Is the agent-sandbox watcher running?" >&2
+  echo "Timed out waiting for PR creation. Is the playsafe watcher running?" >&2
   exit 1
 fi
 
@@ -224,7 +224,7 @@ exec "$REAL_GIT" -c safe.directory='*' "$@"
 
   // Prompt goes in .zshrc so it loads after system defaults for interactive shells
   writeFileSync(`${AGENT_HOME}/.zshrc`, [
-    `PROMPT='%F{yellow}sandbox%f %F{cyan}%1~%f %F{8}$%f '`,
+    `PROMPT='%F{yellow}playsafe%f %F{cyan}%1~%f %F{8}$%f '`,
     ``,
   ].join("\n"));
   exec(`chown $(id -u ${AGENT_USER}):$(id -g ${AGENT_USER}) "${AGENT_HOME}/.zshrc"`);
@@ -251,7 +251,7 @@ exec "$REAL_GIT" -c safe.directory='*' "$@"
         console.log("The sandboxed agent needs a read-only GitHub token.");
         console.log("It can clone and fetch but CANNOT push, create PRs, or merge.\n");
         console.log("When the browser opens, configure the token like this:\n");
-        console.log("  1. Name:              agent-sandbox-readonly");
+        console.log("  1. Name:              playsafe-readonly");
         console.log("  2. Expiration:        90 days (or your preference)");
         console.log("  3. Repository access: Select 'All repositories'");
         console.log("  4. Permissions:       Expand 'Repository permissions'");
@@ -306,12 +306,12 @@ exec "$REAL_GIT" -c safe.directory='*' "$@"
   if (existsSync(mcpPath)) {
     const existing = JSON.parse(readFileSync(mcpPath, "utf8"));
     existing.mcpServers = existing.mcpServers || {};
-    existing.mcpServers["agent-sandbox"] = getMcpConfig().mcpServers["agent-sandbox"];
+    existing.mcpServers["playsafe"] = getMcpConfig().mcpServers["playsafe"];
     mcpContent = JSON.stringify(existing, null, 2) + "\n";
-    console.log("Updated .mcp.json with agent-sandbox MCP server.");
+    console.log("Updated .mcp.json with playsafe MCP server.");
   } else {
     mcpContent = JSON.stringify(getMcpConfig(), null, 2) + "\n";
-    console.log("Created .mcp.json with agent-sandbox MCP server.");
+    console.log("Created .mcp.json with playsafe MCP server.");
   }
   writeFileSync(mcpPath, mcpContent);
 
@@ -326,7 +326,7 @@ exec "$REAL_GIT" -c safe.directory='*' "$@"
 Ready!
 
   cd ${repoName}
-  agent-sandbox`);
+  playsafe`);
 
   if (!ghOk) {
     console.log(`

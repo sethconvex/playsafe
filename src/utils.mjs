@@ -4,16 +4,16 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 // OS-user isolation (opt-in with --os-user)
-export const AGENT_USER = "sandbox-agent";
+export const AGENT_USER = "playsafe-user";
 export const AGENT_HOME = `/Users/${AGENT_USER}`;
 
 // Directory-based isolation (default, no sudo)
-export const SANDBOX_DIR = join(homedir(), ".agent-sandbox");
+export const SANDBOX_DIR = join(homedir(), ".playsafe");
 export const SANDBOX_WORKSPACE = join(SANDBOX_DIR, "workspace");
 export const SANDBOX_GIT_DIR = join(SANDBOX_DIR, "git");
 
-export const PR_REQUEST_DIR = "/tmp/agent-sandbox-pr-requests";
-export const PLIST_NAME = "com.agent-sandbox.pr-watcher";
+export const PR_REQUEST_DIR = "/tmp/playsafe-pr-requests";
+export const PLIST_NAME = "com.playsafe.pr-watcher";
 
 export const CONFIG_FILE = join(SANDBOX_DIR, "config.json");
 

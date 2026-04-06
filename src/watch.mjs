@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { PR_REQUEST_DIR, PLIST_NAME, exec, ensureDir } from "./utils.mjs";
 
 const USAGE = `
-agent-sandbox watch — Watch for PR requests, push branches, and create draft PRs
+playsafe watch — Watch for PR requests, push branches, and create draft PRs
 
 Runs in the foreground as your user. Uses your 'gh' CLI auth to push the
 agent's local branch and create a draft PR.
 
 Usage:
-  agent-sandbox watch [--install]
+  playsafe watch [--install]
 
 Options:
   --install   Install as a launchd agent (runs in background on login)
@@ -54,10 +54,10 @@ function processRequest(requestFile) {
     console.log(`  Remote: ${repo}`);
 
     // Enforce branch prefix
-    const BRANCH_PREFIX = "sandbox/";
+    const BRANCH_PREFIX = "playsafe/";
     let pushBranch = branch;
     if (!branch.startsWith(BRANCH_PREFIX)) {
-      pushBranch = `sandbox/${request.requested_by || "agent"}/${branch}`;
+      pushBranch = `playsafe/${request.requested_by || "agent"}/${branch}`;
       console.log(`  Renaming branch to '${pushBranch}' (enforcing sandbox/ prefix)`);
       try { exec(`git -C "${repo_path}" -c safe.directory='*' branch -m "${branch}" "${pushBranch}"`); } catch {}
     }
@@ -65,7 +65,7 @@ function processRequest(requestFile) {
     // Refuse to push to protected branches
     const blocked = ["main", "master", "develop", "release"];
     if (blocked.includes(pushBranch) || !pushBranch.startsWith(BRANCH_PREFIX)) {
-      throw new Error(`Refusing to push to '${pushBranch}'. Only sandbox/* branches are allowed.`);
+      throw new Error(`Refusing to push to '${pushBranch}'. Only playsafe/* branches are allowed.`);
     }
 
     // Push the branch (no --force flags)
@@ -136,7 +136,7 @@ export async function watch(argv) {
   const os = await import("node:os");
   const plistDir = join(os.homedir(), "Library", "LaunchAgents");
   const plistPath = join(plistDir, `${PLIST_NAME}.plist`);
-  const logDir = join(os.homedir(), "Library", "Logs", "agent-sandbox");
+  const logDir = join(os.homedir(), "Library", "Logs", "playsafe");
 
   if (values.uninstall) {
     const uid = exec("id -u");
@@ -151,7 +151,7 @@ export async function watch(argv) {
     ensureDir(logDir);
     ensureDir(PR_REQUEST_DIR);
 
-    const cliPath = exec("which agent-sandbox");
+    const cliPath = exec("which playsafe");
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -187,7 +187,7 @@ export async function watch(argv) {
 
     console.log("PR watcher installed as launchd agent.");
     console.log(`Logs: ${logDir}/pr-watcher.stdout.log`);
-    console.log(`\nTo stop:  agent-sandbox watch --uninstall`);
+    console.log(`\nTo stop:  playsafe watch --uninstall`);
     return;
   }
 

@@ -13,24 +13,22 @@ import { openSync, existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 
 const USAGE = `
-agent-sandbox — Run AI coding agents safely in a sandboxed macOS user
+playsafe — Run AI coding agents safely in a sandboxed macOS user
 
 Usage:
-  agent-sandbox <repo-url>          Clone, setup, and start agent in one step
-  agent-sandbox                     Become the sandbox user in current dir
-  agent-sandbox <cmd> [args...]     Run a command as the sandbox user
-  agent-sandbox clone <repo-url>    Clone a repo into a secure sandbox
-  agent-sandbox watch               Start the draft PR watcher
-  agent-sandbox uninstall           Remove the sandbox user and watcher
+  playsafe <repo-url>          Clone, setup, and enter sandbox in one step
+  playsafe                     Enter sandbox in current dir
+  playsafe <cmd> [args...]     Run a command as the sandbox user
+  playsafe uninstall           Remove the sandbox user and all config
 
 Options:
   -h, --help  Show this help
   -v, --version
 
 Examples:
-  agent-sandbox https://github.com/owner/repo
-  agent-sandbox clone https://github.com/owner/repo && cd repo && agent-sandbox
-  agent-sandbox claude --dangerously-skip-permissions
+  playsafe https://github.com/owner/repo
+  playsafe clone https://github.com/owner/repo && cd repo && playsafe
+  playsafe claude --dangerously-skip-permissions
 `.trim();
 
 const command = process.argv[2];
@@ -95,7 +93,7 @@ if (command && isRepoUrl(command)) {
 // Default: become the sandbox user in the current directory
 if (!userExists(AGENT_USER)) {
   console.error(`Sandbox user '${AGENT_USER}' not found.`);
-  console.error("Run 'agent-sandbox <repo-url>' to get started.");
+  console.error("Run 'playsafe <repo-url>' to get started.");
   process.exit(1);
 }
 
@@ -110,7 +108,7 @@ try {
 // Start the watcher in the background
 ensureDir(PR_REQUEST_DIR);
 const cliDir = dirname(fileURLToPath(import.meta.url));
-const logDir = joinPath(homedir(), "Library", "Logs", "agent-sandbox");
+const logDir = joinPath(homedir(), "Library", "Logs", "playsafe");
 ensureDir(logDir);
 const logFile = joinPath(logDir, "watcher.log");
 let logFd;
@@ -148,19 +146,19 @@ const bgGreen = (s) => `\x1b[42m\x1b[30m${s}\x1b[0m`;
 
 try {
   if (remaining.length > 0) {
-    console.log(`${bgGreen(" SANDBOX ")} Running ${bold(remaining[0])} as ${cyan(AGENT_USER)}`);
-    console.log(dim(`  git push → draft PR  |  branches → sandbox/*  |  read-only PAT`));
+    console.log(`${bgGreen(" PLAYSAFE ")} Running ${bold(remaining[0])} as ${cyan(AGENT_USER)}`);
+    console.log(dim(`  git push → draft PR  |  branches → playsafe/*  |  read-only PAT`));
     console.log();
     await execLive("sudo", ["-u", AGENT_USER, "-H", ...remaining], {
       cwd: process.cwd(),
     });
   } else {
     console.log();
-    console.log(`${bgGreen(" SANDBOX ")} ${bold(basename(process.cwd()))}`);
+    console.log(`${bgGreen(" PLAYSAFE ")} ${bold(basename(process.cwd()))}`);
     console.log();
     console.log(`  ${green("user")}     ${AGENT_USER} ${dim("(isolated macOS user)")}`);
     console.log(`  ${green("git")}      read-only ${dim("— pushes become draft PRs")}`);
-    console.log(`  ${green("branches")} sandbox/* ${dim("— auto-prefixed")}`);
+    console.log(`  ${green("branches")} playsafe/* ${dim("— auto-prefixed")}`);
     console.log();
     console.log(dim(`  Type 'exit' or Ctrl+D to leave the sandbox.`));
     console.log();
@@ -181,7 +179,9 @@ try {
   }
 } catch (err) {
   // agent exited with non-zero, that's ok
-} finally {
-  watcherProc.kill();
-  console.log(dim("\nSandbox closed. Watcher stopped."));
 }
+
+// Clean up watcher and exit immediately
+try { watcherProc.kill(); } catch {}
+console.log(dim("\nSandbox closed."));
+process.exit(0);

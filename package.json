@@ -1,9 +1,9 @@
 {
-  "name": "agent-sandbox",
+  "name": "playsafe",
   "version": "0.1.0",
-  "description": "Run AI coding agents safely using an isolated macOS user and draft-PR-only workflow",
+  "description": "Run AI coding agents safely in a sandboxed macOS user with draft-PR-only workflow",
   "bin": {
-    "agent-sandbox": "./bin/cli.mjs"
+    "playsafe": "./bin/cli.mjs"
   },
   "type": "module",
   "license": "MIT",

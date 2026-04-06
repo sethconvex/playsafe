@@ -4,13 +4,13 @@ import { join, resolve } from "node:path";
 import { PR_REQUEST_DIR, ensureDir } from "./utils.mjs";
 
 const USAGE = `
-agent-sandbox request — Request a draft PR (used by the agent)
+playsafe request — Request a draft PR (used by the agent)
 
 The agent commits locally, then calls this. The watcher pushes the branch
 and creates a draft PR using the reviewer's credentials.
 
 Usage:
-  agent-sandbox request --repo-path <path> --branch <branch> --title <title> [options]
+  playsafe request --repo-path <path> --branch <branch> --title <title> [options]
 
 Options:
   --repo-path  Path to the local git repo
@@ -91,6 +91,6 @@ export async function requestPr(argv) {
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  console.error("Timed out waiting for PR creation. Is 'agent-sandbox watch' running?");
+  console.error("Timed out waiting for PR creation. Is 'playsafe watch' running?");
   process.exit(1);
 }
