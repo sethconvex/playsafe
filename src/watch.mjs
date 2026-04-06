@@ -1,8 +1,8 @@
 import { parseArgs } from "node:util";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, unlinkSync, readdirSync, existsSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, readdirSync, existsSync, chmodSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { PR_REQUEST_DIR, PLIST_NAME, exec, ensureDir } from "./utils.mjs";
+import { AGENT_USER, PR_REQUEST_DIR, PLIST_NAME, exec, execFile, ensureDir } from "./utils.mjs";
 
 const USAGE = `
 playsafe watch — Watch for PR requests, push branches, and create draft PRs
@@ -20,14 +20,18 @@ Options:
 `.trim();
 
 function writeResult(path, data) {
-  writeFileSync(path, JSON.stringify(data));
-  // Make world-writable so the sandbox user can clean it up
-  chmodSync(path, 0o666);
+  writeFileSync(path, JSON.stringify(data), { mode: 0o600 });
+  try { chmodSync(path, 0o600); } catch {}
 }
 
 function processRequest(requestFile) {
   let request;
   try {
+    const expectedUid = parseInt(exec(`id -u ${AGENT_USER}`), 10);
+    const st = statSync(requestFile);
+    if (st.uid !== expectedUid) {
+      throw new Error(`Unexpected request owner UID ${st.uid}`);
+    }
     request = JSON.parse(readFileSync(requestFile, "utf8"));
   } catch (err) {
     console.error(`[${ts()}] Bad request file ${requestFile}: ${err.message}`);
@@ -45,7 +49,7 @@ function processRequest(requestFile) {
 
   try {
     // Determine the remote repo (owner/repo) from git remote
-    const remoteUrl = exec(`git -C "${repo_path}" remote get-url origin`);
+    const remoteUrl = execFile("git", ["-C", repo_path, "remote", "get-url", "origin"]);
     const match = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/);
     if (!match) {
       throw new Error(`Could not parse GitHub repo from remote URL: ${remoteUrl}`);
@@ -58,8 +62,8 @@ function processRequest(requestFile) {
     let pushBranch = branch;
     if (!branch.startsWith(BRANCH_PREFIX)) {
       pushBranch = `playsafe/${request.requested_by || "agent"}/${branch}`;
-      console.log(`  Renaming branch to '${pushBranch}' (enforcing sandbox/ prefix)`);
-      try { exec(`git -C "${repo_path}" -c safe.directory='*' branch -m "${branch}" "${pushBranch}"`); } catch {}
+      console.log(`  Renaming branch to '${pushBranch}' (enforcing playsafe/ prefix)`);
+      try { execFile("git", ["-C", repo_path, "-c", "safe.directory=*", "branch", "-m", branch, pushBranch]); } catch {}
     }
 
     // Refuse to push to protected branches
@@ -69,9 +73,9 @@ function processRequest(requestFile) {
     }
 
     // Push the branch (no --force flags)
-    exec(`git config --global --add safe.directory "${repo_path}"`);
+    execFile("git", ["config", "--global", "--add", "safe.directory", repo_path]);
     console.log(`  Pushing branch '${pushBranch}'...`);
-    exec(`git -C "${repo_path}" -c "credential.helper=!gh auth git-credential" push origin "${pushBranch}"`);
+    execFile("git", ["-C", repo_path, "-c", "credential.helper=!gh auth git-credential", "push", "origin", pushBranch]);
     console.log(`  Branch pushed.`);
 
     // Create the draft PR using execFileSync to avoid shell escaping issues
@@ -86,7 +90,7 @@ function processRequest(requestFile) {
     ], { encoding: "utf8", stdio: "pipe" }).trim();
 
     console.log(`  Created draft PR: ${prUrl}`);
-    try { exec(`open "${prUrl}"`); } catch {}
+    try { execFile("open", [prUrl]); } catch {}
     writeResult(resultFile, { status: "success", pr_url: prUrl, id });
   } catch (err) {
     console.error(`  Error: ${err.message}`);
@@ -193,7 +197,6 @@ export async function watch(argv) {
 
   // Foreground mode
   ensureDir(PR_REQUEST_DIR);
-  try { chmodSync(PR_REQUEST_DIR, 0o777); } catch {}
   console.log(`[${ts()}] Watching ${PR_REQUEST_DIR} for PR requests...`);
   console.log("Press Ctrl+C to stop.\n");
 

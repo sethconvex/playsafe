@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, unlinkSync, chmodSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PR_REQUEST_DIR, ensureDir } from "./utils.mjs";
 
@@ -91,7 +91,8 @@ function handleCreateDraftPr(args) {
     requested_at: new Date().toISOString(),
   };
 
-  writeFileSync(requestFile, JSON.stringify(request, null, 2));
+  writeFileSync(requestFile, JSON.stringify(request, null, 2), { mode: 0o600 });
+  try { chmodSync(requestFile, 0o600); } catch {}
 
   // Wait for result (up to 120 seconds — push + PR creation can take a moment)
   const resultFile = join(PR_REQUEST_DIR, `${id}.result`);
