@@ -1,106 +1,100 @@
 # agent-sandbox
 
-Run AI coding agents safely in a sandboxed macOS user. The agent gets a **read-only** GitHub PAT — it can clone and commit locally but **cannot push, create PRs, or merge**. When the agent is done, a watcher service pushes the branch and creates a draft PR for your review.
+Run AI coding agents safely in a sandboxed macOS user. The agent gets a **read-only** GitHub PAT — it can clone and commit locally but **cannot push, create PRs, or merge**. When the agent pushes, a watcher intercepts it, pushes the branch for real, and creates a draft PR for your review.
 
 Works with any coding agent: [Claude Code](https://claude.ai/code), [Codex](https://github.com/openai/codex), [Aider](https://aider.chat), [Goose](https://github.com/block/goose), or any CLI tool.
 
 ## Quickstart
 
 ```bash
-# 1. Install
-npm install -g agent-sandbox
-
-# 2. Make sure gh CLI is authenticated (used to push and create draft PRs)
+# 1. Make sure gh CLI is authenticated (used to push and create draft PRs)
 gh auth login
 
-# 3. Clone a repo (creates sandbox user if needed, prompts for PAT, adds MCP)
-agent-sandbox clone https://github.com/you/your-repo
+# 2. One command — sets up sandbox user, clones repo, drops you in
+npx agent-sandbox https://github.com/owner/repo
 
-# 4. In one terminal, start the PR watcher
-agent-sandbox watch
+# 3. You're now in the sandbox. Run your agent:
+sandbox repo $ claude
+sandbox repo $ codex --full-auto
+sandbox repo $ aider
 
-# 5. In another terminal, run your agent
-cd your-repo
-agent-sandbox
+# 4. When the agent runs `git push`, it becomes a draft PR
+#    The PR opens in your browser automatically
+
+# 5. Ctrl+D to exit the sandbox
 ```
 
-That's it. The `clone` command handles all setup — creating the macOS sandbox user, getting a read-only PAT, cloning the repo, and configuring MCP. Running `agent-sandbox` in the repo launches Claude as the sandbox user.
+That's it. First time, it creates a macOS sandbox user, opens your browser to create a read-only PAT, clones the repo, starts the watcher, and drops you into a sandboxed shell. After that, just `cd repo && agent-sandbox`.
 
 ## How it works
 
 ```
 ┌─────────────────────────────┐     ┌──────────────────────────────┐
-│  sandbox-agent (macOS user) │     │  your user                   │
+│  sandbox-agent (macOS user) │     │  watcher (your user)         │
 │                             │     │                              │
-│  Any coding agent CLI       │     │  agent-sandbox watch         │
+│  Any coding agent CLI       │     │  Started automatically       │
 │  Git PAT: read-only         │────>│  gh CLI (authenticated)      │
-│  Cannot push or create PRs  │ JSON│  Pushes branch               │
-│                             │file │  Creates DRAFT PR            │
-│  Commits locally, then      │     │                              │
-│  requests a draft PR        │     │  You review & merge          │
+│  git push intercepted       │ JSON│  Pushes branch for real      │
+│  Branches: sandbox/*        │file │  Creates DRAFT PR            │
+│                             │     │  Opens PR in browser         │
+│  Can't access your creds    │     │  You review & merge          │
 └─────────────────────────────┘     └──────────────────────────────┘
 ```
 
-1. `agent-sandbox clone` creates a sandboxed macOS user with a read-only GitHub PAT
-2. `agent-sandbox` runs your coding agent as that user — it can read and commit but not push
-3. The agent calls `create_draft_pr` (via MCP tool, added automatically) when it's done
-4. The watcher (your user, your credentials) pushes the branch and creates a draft PR
-5. You review the draft PR and merge when ready
+1. `agent-sandbox <url>` creates a sandboxed macOS user with a read-only GitHub PAT
+2. A git wrapper intercepts all `git push` calls and routes them through a watcher
+3. The watcher (running as your user) pushes the branch and creates a draft PR
+4. All branches are auto-prefixed with `sandbox/` — no pushing to main/master
+5. The draft PR opens in your browser. You review and merge when ready
 
 ## Usage
 
-### Clone a repo
+### First time (clone + enter sandbox)
 
 ```bash
-agent-sandbox clone https://github.com/owner/repo
+agent-sandbox https://github.com/owner/repo
+# or shorthand:
+agent-sandbox owner/repo
 ```
 
-First time, this will:
-- Create the `sandbox-agent` macOS user (prompts for sudo)
-- Open your browser to create a read-only GitHub PAT
-- Clone the repo
-- Add `.mcp.json` so the agent gets a `create_draft_pr` tool
-
-### Run an agent
+### Already cloned (enter sandbox in current dir)
 
 ```bash
 cd repo
-agent-sandbox                                            # runs claude (default)
-agent-sandbox --agent codex -- --full-auto               # runs codex
-agent-sandbox --agent aider                              # runs aider
-agent-sandbox -- --dangerously-skip-permissions -p "fix" # pass args to claude
+agent-sandbox                              # sandboxed shell
+agent-sandbox claude                       # run a specific command
+agent-sandbox codex --full-auto            # pass args through
 ```
 
-### Start the PR watcher
+### What the agent sees
 
-```bash
-# Foreground
-agent-sandbox watch
+The agent works normally — `git checkout -b`, `git commit`, `git push` all work. But:
 
-# Or install as a background service (launchd)
-agent-sandbox watch --install
-```
+- Branches are auto-prefixed: `git checkout -b fix` → `sandbox/you/fix`
+- `git push` creates a draft PR instead of pushing directly
+- Force push is blocked
+- Pushing to main/master/develop/release is blocked
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `agent-sandbox` | Run agent as sandbox user in current dir (default: claude) |
-| `agent-sandbox clone <url>` | Clone repo into sandbox (creates user if needed) |
-| `agent-sandbox watch` | Start the PR watcher (foreground) |
-| `agent-sandbox watch --install` | Install watcher as a background launchd agent |
-| `agent-sandbox watch --uninstall` | Remove the launchd agent |
-| `agent-sandbox request` | Request a draft PR via CLI |
-| `agent-sandbox serve` | Start the MCP server (stdio) |
-| `agent-sandbox uninstall` | Remove everything |
+| `agent-sandbox <repo-url>` | Clone, setup, and enter sandbox in one step |
+| `agent-sandbox` | Enter sandbox in current dir |
+| `agent-sandbox <cmd> [args]` | Run a command as the sandbox user |
+| `agent-sandbox clone <url>` | Clone a repo without entering the sandbox |
+| `agent-sandbox uninstall` | Remove the sandbox user and all config |
 
 ## Security model
 
 - The agent runs as a **separate macOS user** (`sandbox-agent`) with no access to your credentials
 - The agent's PAT is **read-only** — it cannot push, create PRs, or merge
+- A git wrapper intercepts `git push` and routes it through a watcher
 - The watcher pushes branches and creates **draft PRs** using your `gh` auth
-- All PRs require your review before merging
-- The MCP server has no credentials — it only writes request files to a watched directory
+- All branches are forced to `sandbox/*` — the agent can't push to protected branches
+- Force pushing is blocked
+- Draft PRs open in your browser for review
+- Files created by the sandbox user are world-writable (you can `rm -rf` without sudo)
 
 ## Uninstall
 
