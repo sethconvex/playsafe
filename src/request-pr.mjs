@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, unlinkSync, chmodSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PR_REQUEST_DIR, ensureDir } from "./utils.mjs";
 
@@ -67,7 +67,8 @@ export async function requestPr(argv) {
     requested_at: new Date().toISOString(),
   };
 
-  writeFileSync(requestFile, JSON.stringify(request, null, 2));
+  writeFileSync(requestFile, JSON.stringify(request, null, 2), { mode: 0o600 });
+  try { chmodSync(requestFile, 0o600); } catch {}
   console.log(`PR request submitted: ${id}`);
 
   if (!values.wait) return;

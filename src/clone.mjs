@@ -1,6 +1,5 @@
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
-import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, chmodSync, chownSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
@@ -122,9 +121,19 @@ export async function clone(argv) {
   const binDir = `${AGENT_HOME}/bin`;
   ensureDir(binDir);
   const realGit = exec("which git");
+  const nodePath = process.execPath;
+  const playsafeBin = (() => {
+    try {
+      return exec("which playsafe");
+    } catch {
+      return process.argv[1];
+    }
+  })();
   const wrapper = `#!/bin/bash
 REAL_GIT="${realGit}"
 BRANCH_PREFIX="playsafe/${realUser}"
+PLAYSAFE_NODE="${nodePath}"
+PLAYSAFE_BIN="${playsafeBin}"
 
 # Intercept branch creation — enforce prefix
 # git checkout -b <name> or git switch -c <name>
@@ -159,52 +168,13 @@ if [ "$1" = "push" ]; then
   DEFAULT_BRANCH="\${DEFAULT_BRANCH:-main}"
   BODY="$("$REAL_GIT" -c safe.directory='*' log --oneline "\${DEFAULT_BRANCH}..HEAD" 2>/dev/null || echo "")"
 
-  REQUEST_DIR="${PR_REQUEST_DIR}"
-  REQUEST_ID="pr-$(date +%s)-$$"
-  REQUEST_FILE="\${REQUEST_DIR}/\${REQUEST_ID}.json"
-  RESULT_FILE="\${REQUEST_DIR}/\${REQUEST_ID}.result"
-
-  mkdir -p "\${REQUEST_DIR}"
-
-  cat > "\${REQUEST_FILE}" <<REQEOF
-{
-  "id": "\${REQUEST_ID}",
-  "repo_path": "\${REPO_PATH}",
-  "branch": "\${BRANCH}",
-  "base": "\${DEFAULT_BRANCH}",
-  "title": "\${TITLE}",
-  "body": "\${BODY}",
-  "requested_by": "$(whoami)",
-  "requested_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-REQEOF
-
   echo "Pushing branch '\${BRANCH}' and creating draft PR..."
-
-  # Wait for the watcher to process it
-  TIMEOUT=120
-  ELAPSED=0
-  while [ $ELAPSED -lt $TIMEOUT ]; do
-    if [ -f "\${RESULT_FILE}" ]; then
-      STATUS=$(cat "\${RESULT_FILE}" 2>/dev/null)
-      rm -f "\${RESULT_FILE}" >/dev/null 2>&1 || true
-      if echo "\${STATUS}" | grep -q '"success"'; then
-        PR_URL=$(echo "\${STATUS}" | grep -o '"pr_url": *"[^"]*"' | head -1 | sed 's/"pr_url": *"//;s/"$//')
-        echo "Branch pushed and draft PR created successfully."
-        echo "PR: \${PR_URL}"
-        exit 0
-      else
-        ERROR=$(echo "\${STATUS}" | grep -o '"error": *"[^"]*"' | head -1 | sed 's/"error": *"//;s/"$//')
-        echo "Failed to create draft PR: \${ERROR}" >&2
-        exit 1
-      fi
-    fi
-    sleep 0.5
-    ELAPSED=$((ELAPSED + 1))
-  done
-
-  echo "Timed out waiting for PR creation. Is the playsafe watcher running?" >&2
-  exit 1
+  exec "$PLAYSAFE_NODE" "$PLAYSAFE_BIN" request \
+    --repo-path "$REPO_PATH" \
+    --branch "$BRANCH" \
+    --base "$DEFAULT_BRANCH" \
+    --title "$TITLE" \
+    --body "$BODY"
 fi
 
 # All other git commands pass through with safe.directory
@@ -229,8 +199,23 @@ exec "$REAL_GIT" -c safe.directory='*' "$@"
   ].join("\n"));
   exec(`chown $(id -u ${AGENT_USER}):$(id -g ${AGENT_USER}) "${AGENT_HOME}/.zshrc"`);
 
+  const runDir = join(AGENT_HOME, "run");
+  ensureDir(runDir);
   ensureDir(PR_REQUEST_DIR);
-  chmodSync(PR_REQUEST_DIR, 0o777);
+  exec(`chown -R $(id -u ${AGENT_USER}):$(id -g ${AGENT_USER}) "${runDir}"`);
+  chmodSync(runDir, 0o700);
+  chmodSync(PR_REQUEST_DIR, 0o700);
+  try {
+    exec(`chmod -N "${AGENT_HOME}"`);
+  } catch {}
+  try {
+    exec(`chmod -R -N "${runDir}"`);
+  } catch {}
+  try {
+    exec(`chmod +a "${realUser} allow list,search,readattr,readextattr,readsecurity" "${AGENT_HOME}"`);
+    exec(`chmod +a "${realUser} allow list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit" "${runDir}"`);
+    exec(`chmod +a "${realUser} allow list,search,read,write,append,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" "${PR_REQUEST_DIR}"`);
+  } catch {}
   console.log("  Sandbox configured.");
 
   // Step 2: Ensure PAT is configured

@@ -1,4 +1,4 @@
-import { execSync, spawn } from "node:child_process";
+import { execSync, spawn, execFileSync } from "node:child_process";
 import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -12,7 +12,7 @@ export const SANDBOX_DIR = join(homedir(), ".playsafe");
 export const SANDBOX_WORKSPACE = join(SANDBOX_DIR, "workspace");
 export const SANDBOX_GIT_DIR = join(SANDBOX_DIR, "git");
 
-export const PR_REQUEST_DIR = "/tmp/playsafe-pr-requests";
+export const PR_REQUEST_DIR = join(AGENT_HOME, "run", "pr-requests");
 export const PLIST_NAME = "com.playsafe.pr-watcher";
 
 export const CONFIG_FILE = join(SANDBOX_DIR, "config.json");
@@ -23,6 +23,10 @@ export function ensureDir(dir) {
 
 export function exec(cmd, opts = {}) {
   return execSync(cmd, { encoding: "utf8", stdio: "pipe", ...opts }).trim();
+}
+
+export function execFile(cmd, args = [], opts = {}) {
+  return execFileSync(cmd, args, { encoding: "utf8", stdio: "pipe", ...opts }).trim();
 }
 
 export function execLive(cmd, args = [], opts = {}) {
