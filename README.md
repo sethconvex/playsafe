@@ -34,16 +34,15 @@ First time, playsafe creates a macOS sandbox user, opens your browser to create 
 │                             │     │                              │
 │  Any coding agent CLI       │     │  Started automatically       │
 │  Git PAT: read-only         │────>│  gh CLI (authenticated)      │
-│  git push intercepted       │ JSON│  Pushes branch for real      │
-│  Branches: playsafe/*        │file │  Creates DRAFT PR            │
-│                             │     │  Opens PR in browser         │
-│  Can't access your creds    │     │  You review & merge          │
+│  git push intercepted       │ bare│  Promotes staged branch      │
+│  Pushes to local staging    │ repo│  Creates / reuses DRAFT PR   │
+│  Can't access your creds    │     │  Opens PR in browser         │
 └─────────────────────────────┘     └──────────────────────────────┘
 ```
 
 1. `playsafe <url>` creates a sandboxed macOS user with a read-only GitHub PAT
-2. A git wrapper intercepts `git push` and routes it through a watcher process
-3. The watcher (running as your user) pushes the branch and creates a draft PR
+2. A git wrapper intercepts `git push` and sends it to a local bare staging remote
+3. The watcher (running as your user) promotes staged `playsafe/*` branches to GitHub
 4. All branches are auto-prefixed with `playsafe/` — no pushing to main/master
 5. The draft PR opens in your browser. You review and merge when ready
 
@@ -71,7 +70,7 @@ playsafe codex --full-auto            # pass args through
 The agent works normally — `git checkout -b`, `git commit`, `git push` all work. But:
 
 - Branches are auto-prefixed: `git checkout -b fix` → `playsafe/you/fix`
-- `git push` creates a draft PR instead of pushing directly
+- `git push` stages the branch locally; the host watcher then publishes a draft PR
 - Force push is blocked
 - Pushing to main/master/develop/release is blocked
 
@@ -88,8 +87,8 @@ The agent works normally — `git checkout -b`, `git commit`, `git push` all wor
 
 - The agent runs as a **separate macOS user** (`playsafe-user`) with no access to your credentials
 - The agent's PAT is **read-only** — it cannot push, create PRs, or merge
-- A git wrapper intercepts `git push` and routes it through a watcher
-- The watcher pushes branches and creates **draft PRs** using your `gh` auth
+- A git wrapper intercepts `git push` and redirects it to a local bare staging remote
+- The watcher promotes staged branches and creates **draft PRs** using your `gh` auth, but only for repos previously registered by `playsafe clone`
 - All branches are forced to `playsafe/*` — the agent can't push to protected branches
 - Force pushing is blocked
 - Draft PRs open in your browser for review
