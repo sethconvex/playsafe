@@ -1,17 +1,16 @@
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
-import { existsSync, readFileSync, writeFileSync, chmodSync, chownSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, chmodSync, chownSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
-  AGENT_USER, AGENT_HOME, PR_REQUEST_DIR,
-  exec, execLive, isRoot, userExists, ensureDir,
+  AGENT_USER, AGENT_HOME, STAGING_REMOTE_DIR, SANDBOX_DIR,
+  execFile, execLive, isRoot, userExists, ensureDir, loadConfig, saveConfig, getUserIds, stagingRemoteName,
 } from "./utils.mjs";
 
 const USAGE = `
 playsafe clone — Clone a repo into a secure sandbox
 
-Creates the sandbox user if needed, clones the repo using a read-only PAT,
-and configures MCP so the agent gets a create_draft_pr tool automatically.
+Creates the sandbox user if needed and clones the repo using a read-only PAT.
 
 Usage:
   playsafe clone <repo-url>
@@ -25,27 +24,22 @@ Options:
   -h, --help  Show this help
 `.trim();
 
-function getMcpConfig() {
-  // Use absolute paths so the sandbox user can find node and the script
-  const nodePath = process.execPath;
-  let binPath;
-  try {
-    binPath = exec("which playsafe");
-  } catch {
-    binPath = process.argv[1];
-  }
-  return {
-    mcpServers: {
-      "playsafe": {
-        command: nodePath,
-        args: [binPath, "serve"],
-      },
-    },
-  };
-}
-
 function prompt(rl, question) {
   return new Promise((resolve) => rl.question(question, resolve));
+}
+
+function addAllowedRepo(repoPath, owner) {
+  const config = loadConfig() || {};
+  const allowedRepos = Array.isArray(config.allowedRepos) ? config.allowedRepos : [];
+  const normalizedPath = realpathSync(repoPath);
+  const next = allowedRepos.filter((repo) => repo.path !== normalizedPath);
+  const originUrl = execFile("git", ["-C", normalizedPath, "remote", "get-url", "origin"]);
+  const remoteName = `${stagingRemoteName(normalizedPath)}.git`;
+  const stagingPath = join(STAGING_REMOTE_DIR, remoteName);
+  next.push({ path: normalizedPath, owner, originUrl, stagingPath });
+  config.allowedRepos = next;
+  saveConfig(config);
+  return { normalizedPath, originUrl, stagingPath };
 }
 
 async function openBrowser(url) {
@@ -53,9 +47,9 @@ async function openBrowser(url) {
     // When running under sudo, open the URL as the real user so it uses their default browser
     const realUser = process.env.SUDO_USER;
     if (realUser) {
-      exec(`sudo -u ${realUser} open "${url}"`);
+      execFile("sudo", ["-u", realUser, "open", url]);
     } else {
-      exec(`open "${url}"`);
+      execFile("open", [url]);
     }
   } catch {
     console.log(`  Could not open browser. Visit this URL manually:\n  ${url}`);
@@ -74,7 +68,7 @@ export async function clone(argv) {
 
   if (values.help) {
     console.log(USAGE);
-    return;
+    return { handedOffToSudo: false };
   }
 
   if (positionals.length === 0) {
@@ -86,9 +80,9 @@ export async function clone(argv) {
 
   // Escalate to root upfront — we need it for user creation, chown, etc.
   if (!isRoot()) {
-    console.log("playsafe needs sudo to set up the sandbox.\n");
+    console.log("playsafe needs sudo to create the sandbox user and finish setup.\n");
     await execLive("sudo", [process.execPath, ...process.argv.slice(1)]);
-    return;
+    return { handedOffToSudo: true };
   }
 
   const repoUrl = positionals[0];
@@ -96,44 +90,45 @@ export async function clone(argv) {
   const repoDir = resolve(repoName);
 
   // Step 1: Ensure sandbox user exists
+  ensureDir(SANDBOX_DIR);
+  ensureDir(STAGING_REMOTE_DIR);
+  execFile("chown", ["-R", realUser, SANDBOX_DIR]);
+
   if (userExists(AGENT_USER)) {
     console.log(`Sandbox user '${AGENT_USER}' already exists.`);
   } else {
     console.log(`\nCreating sandboxed macOS user '${AGENT_USER}'...`);
     const password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-    exec(`sysadminctl -addUser ${AGENT_USER} -fullName "Playsafe User" -password "${password}" -home "${AGENT_HOME}"`);
+    execFile("sysadminctl", [
+      "-addUser", AGENT_USER,
+      "-fullName", "Playsafe User",
+      "-password", password,
+      "-home", AGENT_HOME,
+    ]);
     console.log("  User created.");
   }
+
+  const { uid: agentUid, gid: agentGid } = getUserIds(AGENT_USER);
 
   // Ensure home directory exists (sysadminctl doesn't always create it,
   // and uninstall may have deleted it while the user record persists)
   ensureDir(AGENT_HOME);
-  exec(`chown $(id -u ${AGENT_USER}):$(id -g ${AGENT_USER}) "${AGENT_HOME}"`);
+  chownSync(AGENT_HOME, agentUid, agentGid);
 
   // Always update git config, wrapper, and shell env (idempotent)
-  exec(`sudo -u ${AGENT_USER} -H git config --global user.name "${AGENT_USER}"`);
-  exec(`sudo -u ${AGENT_USER} -H git config --global user.email "${AGENT_USER}@localhost"`);
-  exec(`sudo -u ${AGENT_USER} -H git config --global credential.helper store`);
+  execFile("sudo", ["-u", AGENT_USER, "-H", "git", "config", "--global", "user.name", AGENT_USER]);
+  execFile("sudo", ["-u", AGENT_USER, "-H", "git", "config", "--global", "user.email", `${AGENT_USER}@localhost`]);
+  execFile("sudo", ["-u", AGENT_USER, "-H", "git", "config", "--global", "credential.helper", "store"]);
 
   // Git wrapper:
   // 1. Adds safe.directory='*' so repos owned by other users work
-  // 2. Intercepts 'git push' and routes it through the PR watcher
+  // 2. Intercepts 'git push' and routes it through the local staging remote
   const binDir = `${AGENT_HOME}/bin`;
   ensureDir(binDir);
-  const realGit = exec("which git");
-  const nodePath = process.execPath;
-  const playsafeBin = (() => {
-    try {
-      return exec("which playsafe");
-    } catch {
-      return process.argv[1];
-    }
-  })();
+  const realGit = execFile("which", ["git"]);
   const wrapper = `#!/bin/bash
 REAL_GIT="${realGit}"
 BRANCH_PREFIX="playsafe/${realUser}"
-PLAYSAFE_NODE="${nodePath}"
-PLAYSAFE_BIN="${playsafeBin}"
 
 # Intercept branch creation — enforce prefix
 # git checkout -b <name> or git switch -c <name>
@@ -154,35 +149,24 @@ if [ "$1" = "switch" ] && [ "$2" = "-c" ] && [ -n "$3" ]; then
   exec "$REAL_GIT" -c safe.directory='*' switch -c "$BRANCH_NAME" "$@"
 fi
 
-# Intercept push commands — route through the watcher
+# Intercept push commands — route them to the local staging remote
 if [ "$1" = "push" ]; then
-  # Figure out repo path and branch
-  REPO_PATH="$("$REAL_GIT" -c safe.directory='*' rev-parse --show-toplevel 2>/dev/null || pwd)"
   BRANCH="$("$REAL_GIT" -c safe.directory='*' rev-parse --abbrev-ref HEAD 2>/dev/null)"
-
-  # Get the PR title from the last commit message
-  TITLE="$("$REAL_GIT" -c safe.directory='*' log -1 --format=%s 2>/dev/null || echo "$BRANCH")"
-
-  # Get a summary of commits for the body
-  DEFAULT_BRANCH="$("$REAL_GIT" -c safe.directory='*' symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')"
-  DEFAULT_BRANCH="\${DEFAULT_BRANCH:-main}"
-  BODY="$("$REAL_GIT" -c safe.directory='*' log --oneline "\${DEFAULT_BRANCH}..HEAD" 2>/dev/null || echo "")"
-
-  echo "Pushing branch '\${BRANCH}' and creating draft PR..."
-  exec "$PLAYSAFE_NODE" "$PLAYSAFE_BIN" request \
-    --repo-path "$REPO_PATH" \
-    --branch "$BRANCH" \
-    --base "$DEFAULT_BRANCH" \
-    --title "$TITLE" \
-    --body "$BODY"
+  if [[ "$BRANCH" != "$BRANCH_PREFIX/"* ]]; then
+    echo "Refusing to push branch '$BRANCH'. Use a playsafe/* branch." >&2
+    exit 1
+  fi
+  echo "Staging branch '\${BRANCH}' for host review..."
+  exec "$REAL_GIT" -c safe.directory='*' push --force-with-lease playsafe-staging "HEAD:refs/heads/$BRANCH"
 fi
 
 # All other git commands pass through with safe.directory
 exec "$REAL_GIT" -c safe.directory='*' "$@"
-`;
+  `;
   writeFileSync(`${binDir}/git`, wrapper);
   chmodSync(`${binDir}/git`, 0o755);
-  exec(`chown -R $(id -u ${AGENT_USER}):$(id -g ${AGENT_USER}) "${binDir}"`);
+  chownSync(binDir, agentUid, agentGid);
+  chownSync(`${binDir}/git`, agentUid, agentGid);
 
   // Shell config: ~/bin first in PATH, permissive umask
   writeFileSync(`${AGENT_HOME}/.zshenv`, [
@@ -190,31 +174,28 @@ exec "$REAL_GIT" -c safe.directory='*' "$@"
     `umask 0000`,
     ``,
   ].join("\n"));
-  exec(`chown $(id -u ${AGENT_USER}):$(id -g ${AGENT_USER}) "${AGENT_HOME}/.zshenv"`);
+  chownSync(`${AGENT_HOME}/.zshenv`, agentUid, agentGid);
 
   // Prompt goes in .zshrc so it loads after system defaults for interactive shells
   writeFileSync(`${AGENT_HOME}/.zshrc`, [
     `PROMPT='%F{yellow}playsafe%f %F{cyan}%1~%f %F{8}$%f '`,
     ``,
   ].join("\n"));
-  exec(`chown $(id -u ${AGENT_USER}):$(id -g ${AGENT_USER}) "${AGENT_HOME}/.zshrc"`);
+  chownSync(`${AGENT_HOME}/.zshrc`, agentUid, agentGid);
 
   const runDir = join(AGENT_HOME, "run");
   ensureDir(runDir);
-  ensureDir(PR_REQUEST_DIR);
-  exec(`chown -R $(id -u ${AGENT_USER}):$(id -g ${AGENT_USER}) "${runDir}"`);
+  chownSync(runDir, agentUid, agentGid);
   chmodSync(runDir, 0o700);
-  chmodSync(PR_REQUEST_DIR, 0o700);
   try {
-    exec(`chmod -N "${AGENT_HOME}"`);
+    execFile("chmod", ["-N", AGENT_HOME]);
   } catch {}
   try {
-    exec(`chmod -R -N "${runDir}"`);
+    execFile("chmod", ["-R", "-N", runDir]);
   } catch {}
   try {
-    exec(`chmod +a "${realUser} allow list,search,readattr,readextattr,readsecurity" "${AGENT_HOME}"`);
-    exec(`chmod +a "${realUser} allow list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit" "${runDir}"`);
-    exec(`chmod +a "${realUser} allow list,search,read,write,append,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" "${PR_REQUEST_DIR}"`);
+    execFile("chmod", ["+a", `${realUser} allow list,search,readattr,readextattr,readsecurity`, AGENT_HOME]);
+    execFile("chmod", ["+a", `${realUser} allow list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit`, runDir]);
   } catch {}
   console.log("  Sandbox configured.");
 
@@ -259,9 +240,7 @@ exec "$REAL_GIT" -c safe.directory='*' "$@"
     }
 
     writeFileSync(credFile, `https://${AGENT_USER}:${pat}@github.com\n`);
-    const uid = parseInt(exec(`id -u ${AGENT_USER}`));
-    const gid = parseInt(exec(`id -g ${AGENT_USER}`));
-    chownSync(credFile, uid, gid);
+    chownSync(credFile, agentUid, agentGid);
     chmodSync(credFile, 0o600);
     console.log("  Agent PAT stored (read-only).");
   }
@@ -274,36 +253,34 @@ exec "$REAL_GIT" -c safe.directory='*' "$@"
 
   if (existsSync(repoDir)) {
     console.log(`\n${repoName}/ already exists, fetching latest...`);
-    exec(`sudo -u ${realUser} git -C "${repoDir}" fetch --all`, { env: gitEnv });
+    execFile("sudo", ["-u", realUser, "git", "-C", repoDir, "fetch", "--all"], { env: gitEnv });
   } else {
     console.log(`\nCloning ${repoUrl}...`);
-    exec(`sudo -u ${realUser} git clone "${repoUrl}" "${repoDir}"`, { env: gitEnv });
+    execFile("sudo", ["-u", realUser, "git", "clone", repoUrl, repoDir], { env: gitEnv });
     // Make sure it's owned by the real user
-    exec(`chown -R ${realUser} "${repoDir}"`);
+    execFile("chown", ["-R", realUser, repoDir]);
   }
 
   // Grant sandbox user read+write via ACL (you keep ownership)
-  exec(`chmod -R +a "${AGENT_USER} allow read,write,append,execute,delete,file_inherit,directory_inherit" "${repoDir}"`);
-
-  // Step 4: Write .mcp.json
-  const mcpPath = join(repoDir, ".mcp.json");
-  let mcpContent;
-  if (existsSync(mcpPath)) {
-    const existing = JSON.parse(readFileSync(mcpPath, "utf8"));
-    existing.mcpServers = existing.mcpServers || {};
-    existing.mcpServers["playsafe"] = getMcpConfig().mcpServers["playsafe"];
-    mcpContent = JSON.stringify(existing, null, 2) + "\n";
-    console.log("Updated .mcp.json with playsafe MCP server.");
-  } else {
-    mcpContent = JSON.stringify(getMcpConfig(), null, 2) + "\n";
-    console.log("Created .mcp.json with playsafe MCP server.");
+  execFile("chmod", ["-R", "+a", `${AGENT_USER} allow read,write,append,execute,delete,file_inherit,directory_inherit`, repoDir]);
+  ensureDir(STAGING_REMOTE_DIR);
+  const { normalizedPath, stagingPath } = addAllowedRepo(repoDir, realUser);
+  if (!existsSync(stagingPath)) {
+    execFile("git", ["init", "--bare", stagingPath]);
+    execFile("chown", ["-R", realUser, stagingPath]);
   }
-  writeFileSync(mcpPath, mcpContent);
+  execFile("git", ["-C", stagingPath, "config", "core.sharedRepository", "group"]);
+  execFile("chmod", ["-R", "+a", `${AGENT_USER} allow read,write,append,execute,delete,file_inherit,directory_inherit`, stagingPath]);
+  execFile("sudo", ["-u", AGENT_USER, "-H", "git", "config", "--global", "--add", "safe.directory", stagingPath]);
+  try {
+    execFile("git", ["-C", normalizedPath, "remote", "remove", "playsafe-staging"]);
+  } catch {}
+  execFile("git", ["-C", normalizedPath, "remote", "add", "playsafe-staging", stagingPath]);
 
-  // Step 5: Check watcher auth
+  // Step 4: Check watcher auth
   let ghOk = false;
   try {
-    exec(`sudo -u ${realUser} gh auth status`);
+    execFile("sudo", ["-u", realUser, "gh", "auth", "status"]);
     ghOk = true;
   } catch {}
 
@@ -321,4 +298,6 @@ Note: 'gh' CLI is not authenticated. It's needed to push and create draft PRs.
   } else {
     console.log();
   }
+
+  return { handedOffToSudo: false };
 }

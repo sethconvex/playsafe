@@ -6,6 +6,9 @@
     "playsafe": "./bin/cli.mjs"
   },
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=18"

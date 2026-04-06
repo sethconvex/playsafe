@@ -3,8 +3,8 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import {
-  AGENT_USER, AGENT_HOME, SANDBOX_DIR, PR_REQUEST_DIR, PLIST_NAME,
-  exec, execLive, isRoot, userExists,
+  AGENT_USER, AGENT_HOME, SANDBOX_DIR, PLIST_NAME,
+  execFile, execLive, isRoot, userExists,
 } from "./utils.mjs";
 
 const USAGE = `
@@ -42,8 +42,8 @@ export async function uninstall(argv) {
   const realUser = process.env.SUDO_USER || process.env.USER;
   const realHome = process.env.SUDO_USER ? `/Users/${realUser}` : homedir();
   try {
-    const uid = exec(`id -u ${realUser}`);
-    exec(`launchctl bootout gui/${uid}/${PLIST_NAME}`);
+    const uid = execFile("id", ["-u", realUser]);
+    execFile("launchctl", ["bootout", `gui/${uid}/${PLIST_NAME}`]);
   } catch {}
   const plistPath = join(realHome, "Library", "LaunchAgents", `${PLIST_NAME}.plist`);
   if (existsSync(plistPath)) rmSync(plistPath);
@@ -52,7 +52,7 @@ export async function uninstall(argv) {
   // Delete sandbox user
   if (userExists(AGENT_USER)) {
     console.log(`Deleting macOS user '${AGENT_USER}'...`);
-    exec(`sysadminctl -deleteUser ${AGENT_USER}`);
+    execFile("sysadminctl", ["-deleteUser", AGENT_USER]);
     console.log("  User deleted.");
   }
 
@@ -66,9 +66,6 @@ export async function uninstall(argv) {
     rmSync(SANDBOX_DIR, { recursive: true });
     console.log("  Sandbox config removed.");
   }
-
-  // Cleanup
-  if (existsSync(PR_REQUEST_DIR)) rmSync(PR_REQUEST_DIR, { recursive: true });
   const logDir = join(realHome, "Library", "Logs", "playsafe");
   if (existsSync(logDir)) rmSync(logDir, { recursive: true });
 

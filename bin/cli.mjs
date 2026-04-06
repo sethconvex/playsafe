@@ -2,10 +2,8 @@
 
 import { clone } from "../src/clone.mjs";
 import { watch } from "../src/watch.mjs";
-import { requestPr } from "../src/request-pr.mjs";
-import { serve } from "../src/serve.mjs";
 import { uninstall } from "../src/uninstall.mjs";
-import { AGENT_USER, userExists, execLive, exec, PR_REQUEST_DIR, ensureDir } from "../src/utils.mjs";
+import { AGENT_USER, AGENT_HOME, userExists, execLive, exec, ensureDir, STAGING_REMOTE_DIR } from "../src/utils.mjs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join as joinPath, basename, resolve } from "node:path";
@@ -49,7 +47,7 @@ if (command === "-h" || command === "--help") {
 }
 
 // Named subcommands
-const subcommands = { clone, watch, request: requestPr, serve, uninstall };
+const subcommands = { clone, watch, uninstall };
 if (command && subcommands[command]) {
   try {
     await subcommands[command](process.argv.slice(3));
@@ -79,7 +77,10 @@ if (command && isRepoUrl(command)) {
 
   // Clone (handles setup, PAT, etc.)
   try {
-    await clone([repoUrl]);
+    const result = await clone([repoUrl]);
+    if (result?.handedOffToSudo) {
+      process.exit(0);
+    }
   } catch (err) {
     console.error(`Error: ${err.message}`);
     process.exit(1);
@@ -97,6 +98,13 @@ if (!userExists(AGENT_USER)) {
   process.exit(1);
 }
 
+const currentUser = process.env.USER || process.env.LOGNAME;
+if (currentUser === AGENT_USER) {
+  console.error("Already running inside the playsafe sandbox.");
+  console.error("Exit this shell to return to your host user.");
+  process.exit(1);
+}
+
 // Check gh auth before starting
 try {
   exec("gh auth status");
@@ -106,7 +114,7 @@ try {
 }
 
 // Start the watcher in the background
-ensureDir(PR_REQUEST_DIR);
+ensureDir(STAGING_REMOTE_DIR);
 const cliDir = dirname(fileURLToPath(import.meta.url));
 const logDir = joinPath(homedir(), "Library", "Logs", "playsafe");
 ensureDir(logDir);
@@ -143,13 +151,19 @@ const green = (s) => `\x1b[32m${s}\x1b[0m`;
 const yellow = (s) => `\x1b[33m${s}\x1b[0m`;
 const cyan = (s) => `\x1b[36m${s}\x1b[0m`;
 const bgGreen = (s) => `\x1b[42m\x1b[30m${s}\x1b[0m`;
+const agentEnv = {
+  TERM: process.env.TERM || "xterm-256color",
+  HOME: AGENT_HOME,
+  ZDOTDIR: AGENT_HOME,
+  PATH: `${AGENT_HOME}/bin:${process.env.PATH || "/usr/bin:/bin"}`,
+};
 
 try {
   if (remaining.length > 0) {
     console.log(`${bgGreen(" PLAYSAFE ")} Running ${bold(remaining[0])} as ${cyan(AGENT_USER)}`);
     console.log(dim(`  git push → draft PR  |  branches → playsafe/*  |  read-only PAT`));
     console.log();
-    await execLive("sudo", ["-u", AGENT_USER, "-H", ...remaining], {
+    await execLive("sudo", ["-u", AGENT_USER, "-H", "/usr/bin/env", ...Object.entries(agentEnv).map(([key, value]) => `${key}=${value}`), ...remaining], {
       cwd: process.cwd(),
     });
   } else {
@@ -169,12 +183,7 @@ try {
       "/bin/zsh", "-i",
     ], {
       cwd: process.cwd(),
-      env: {
-        TERM: process.env.TERM || "xterm-256color",
-        HOME: `/Users/${AGENT_USER}`,
-        ZDOTDIR: `/Users/${AGENT_USER}`,
-        PATH: process.env.PATH,
-      },
+      env: agentEnv,
     });
   }
 } catch (err) {

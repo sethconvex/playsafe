@@ -1,14 +1,23 @@
 import { parseArgs } from "node:util";
-import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, unlinkSync, readdirSync, existsSync, chmodSync, statSync } from "node:fs";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { AGENT_USER, PR_REQUEST_DIR, PLIST_NAME, exec, execFile, ensureDir } from "./utils.mjs";
+import {
+  AGENT_USER,
+  PLIST_NAME,
+  exec,
+  execFile,
+  ensureDir,
+  listAllowedRepos,
+  listStagingBranches,
+  loadWatchState,
+  saveWatchState,
+} from "./utils.mjs";
 
 const USAGE = `
-playsafe watch — Watch for PR requests, push branches, and create draft PRs
+playsafe watch — Promote staged branches and create draft PRs
 
-Runs in the foreground as your user. Uses your 'gh' CLI auth to push the
-agent's local branch and create a draft PR.
+Runs in the foreground as your user. Watches playsafe staging remotes,
+pushes staged branches to GitHub, and creates draft PRs with your 'gh' auth.
 
 Usage:
   playsafe watch [--install]
@@ -19,98 +28,127 @@ Options:
   -h, --help  Show this help
 `.trim();
 
-function writeResult(path, data) {
-  writeFileSync(path, JSON.stringify(data), { mode: 0o600 });
-  try { chmodSync(path, 0o600); } catch {}
-}
-
-function processRequest(requestFile) {
-  let request;
-  try {
-    const expectedUid = parseInt(exec(`id -u ${AGENT_USER}`), 10);
-    const st = statSync(requestFile);
-    if (st.uid !== expectedUid) {
-      throw new Error(`Unexpected request owner UID ${st.uid}`);
-    }
-    request = JSON.parse(readFileSync(requestFile, "utf8"));
-  } catch (err) {
-    console.error(`[${ts()}] Bad request file ${requestFile}: ${err.message}`);
-    try { unlinkSync(requestFile); } catch {}
-    return;
-  }
-
-  const { id, repo_path, branch, base = "main", title, body = "" } = request;
-  console.log(`[${ts()}] Processing ${id}`);
-  console.log(`  Repo: ${repo_path}`);
-  console.log(`  Branch: ${branch} -> ${base}`);
-  console.log(`  Title: ${title}`);
-
-  const resultFile = requestFile.replace(".json", ".result");
-
-  try {
-    // Determine the remote repo (owner/repo) from git remote
-    const remoteUrl = execFile("git", ["-C", repo_path, "remote", "get-url", "origin"]);
-    const match = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/);
-    if (!match) {
-      throw new Error(`Could not parse GitHub repo from remote URL: ${remoteUrl}`);
-    }
-    const repo = match[1];
-    console.log(`  Remote: ${repo}`);
-
-    // Enforce branch prefix
-    const BRANCH_PREFIX = "playsafe/";
-    let pushBranch = branch;
-    if (!branch.startsWith(BRANCH_PREFIX)) {
-      pushBranch = `playsafe/${request.requested_by || "agent"}/${branch}`;
-      console.log(`  Renaming branch to '${pushBranch}' (enforcing playsafe/ prefix)`);
-      try { execFile("git", ["-C", repo_path, "-c", "safe.directory=*", "branch", "-m", branch, pushBranch]); } catch {}
-    }
-
-    // Refuse to push to protected branches
-    const blocked = ["main", "master", "develop", "release"];
-    if (blocked.includes(pushBranch) || !pushBranch.startsWith(BRANCH_PREFIX)) {
-      throw new Error(`Refusing to push to '${pushBranch}'. Only playsafe/* branches are allowed.`);
-    }
-
-    // Push the branch (no --force flags)
-    execFile("git", ["config", "--global", "--add", "safe.directory", repo_path]);
-    console.log(`  Pushing branch '${pushBranch}'...`);
-    execFile("git", ["-C", repo_path, "-c", "credential.helper=!gh auth git-credential", "push", "origin", pushBranch]);
-    console.log(`  Branch pushed.`);
-
-    // Create the draft PR using execFileSync to avoid shell escaping issues
-    const prUrl = execFileSync("gh", [
-      "pr", "create",
-      "--repo", repo,
-      "--head", pushBranch,
-      "--base", base,
-      "--title", title,
-      "--body", body,
-      "--draft",
-    ], { encoding: "utf8", stdio: "pipe" }).trim();
-
-    console.log(`  Created draft PR: ${prUrl}`);
-    try { execFile("open", [prUrl]); } catch {}
-    writeResult(resultFile, { status: "success", pr_url: prUrl, id });
-  } catch (err) {
-    console.error(`  Error: ${err.message}`);
-    writeResult(resultFile, { status: "error", error: err.message, id });
-  }
-
-  try { unlinkSync(requestFile); } catch {}
-}
-
 function ts() {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
 
-function processExisting() {
-  if (!existsSync(PR_REQUEST_DIR)) return;
-  for (const file of readdirSync(PR_REQUEST_DIR)) {
-    if (file.endsWith(".json")) {
-      processRequest(join(PR_REQUEST_DIR, file));
+function parseGitHubRepo(originUrl) {
+  const match = originUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/);
+  if (!match) throw new Error(`Could not parse GitHub repo from remote URL: ${originUrl}`);
+  return match[1];
+}
+
+function branchKey(repoPath, branch) {
+  return `${repoPath}::${branch}`;
+}
+
+function defaultBranch(repoPath) {
+  try {
+    const symbolic = execFile("git", ["-C", repoPath, "symbolic-ref", "refs/remotes/origin/HEAD"]);
+    return symbolic.replace(/^refs\/remotes\/origin\//, "");
+  } catch {
+    return "main";
+  }
+}
+
+function branchSha(stagingPath, branch) {
+  return execFile("git", ["--git-dir", stagingPath, "rev-parse", `refs/heads/${branch}`]);
+}
+
+function branchTitle(stagingPath, branch) {
+  return execFile("git", ["--git-dir", stagingPath, "log", "-1", "--format=%s", `refs/heads/${branch}`]);
+}
+
+function branchBody(stagingPath, branch, base) {
+  try {
+    return execFile("git", ["--git-dir", stagingPath, "log", "--oneline", `${base}..refs/heads/${branch}`]);
+  } catch {
+    return execFile("git", ["--git-dir", stagingPath, "log", "--oneline", `refs/heads/${branch}`]);
+  }
+}
+
+function existingPrUrl(repo, branch) {
+  try {
+    const output = execFile("gh", ["pr", "view", "--repo", repo, "--head", branch, "--json", "url"]);
+    return JSON.parse(output).url;
+  } catch {
+    return null;
+  }
+}
+
+function createDraftPr(repo, branch, base, title, body) {
+  return execFile("gh", [
+    "pr", "create",
+    "--repo", repo,
+    "--head", branch,
+    "--base", base,
+    "--title", title,
+    "--body", body,
+    "--draft",
+  ]);
+}
+
+function openPrUrl(url, owner) {
+  const currentUser = process.env.USER || execFile("id", ["-un"]);
+  if (currentUser === owner) {
+    execFile("open", [url]);
+    return;
+  }
+  try {
+    if (process.getuid?.() === 0) {
+      execFile("sudo", ["-u", owner, "open", url]);
+      return;
+    }
+  } catch {}
+  execFile("open", [url]);
+}
+
+function promoteBranch(repoConfig, branch, state) {
+  const { path: repoPath, stagingPath, originUrl, owner } = repoConfig;
+  const repo = parseGitHubRepo(originUrl);
+  const key = branchKey(repoPath, branch);
+  const sha = branchSha(stagingPath, branch);
+  const prior = state.branches[key];
+
+  if (prior?.sha === sha) return;
+
+  const base = defaultBranch(repoPath);
+  const title = branchTitle(stagingPath, branch);
+  const body = branchBody(stagingPath, branch, base);
+
+  console.log(`[${ts()}] Promoting ${branch}`);
+  console.log(`  Repo: ${repo}`);
+  console.log(`  Base: ${base}`);
+  console.log(`  Sha: ${sha}`);
+
+  execFile("git", ["-c", "credential.helper=!gh auth git-credential", "push", "origin", `${sha}:refs/heads/${branch}`], {
+    cwd: repoPath,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+
+  const prUrl = existingPrUrl(repo, branch) || createDraftPr(repo, branch, base, title, body).trim();
+  try { openPrUrl(prUrl, owner); } catch {}
+
+  state.branches[key] = { sha, prUrl, updatedAt: new Date().toISOString() };
+}
+
+function processStagingRemotes() {
+  const repos = listAllowedRepos();
+  const state = loadWatchState();
+  state.branches = state.branches || {};
+
+  for (const repoConfig of repos) {
+    if (!repoConfig.stagingPath) continue;
+    for (const branch of listStagingBranches(repoConfig.stagingPath)) {
+      try {
+        promoteBranch(repoConfig, branch, state);
+      } catch (err) {
+        console.error(`[${ts()}] Error promoting ${branch}: ${err.message}`);
+      }
     }
   }
+
+  saveWatchState(state);
 }
 
 export async function watch(argv) {
@@ -129,7 +167,12 @@ export async function watch(argv) {
     return;
   }
 
-  // Verify gh is authenticated
+  const currentUser = process.env.USER || execFile("id", ["-un"]);
+  if (currentUser === AGENT_USER) {
+    console.error("Error: playsafe watch must run as the host user, not playsafe-user.");
+    process.exit(1);
+  }
+
   try {
     exec("gh auth status");
   } catch {
@@ -143,8 +186,8 @@ export async function watch(argv) {
   const logDir = join(os.homedir(), "Library", "Logs", "playsafe");
 
   if (values.uninstall) {
-    const uid = exec("id -u");
-    try { exec(`launchctl bootout gui/${uid}/${PLIST_NAME}`); } catch {}
+    const uid = execFile("id", ["-u"]);
+    try { execFile("launchctl", ["bootout", `gui/${uid}/${PLIST_NAME}`]); } catch {}
     try { unlinkSync(plistPath); } catch {}
     console.log("PR watcher launchd agent removed.");
     return;
@@ -153,10 +196,8 @@ export async function watch(argv) {
   if (values.install) {
     ensureDir(plistDir);
     ensureDir(logDir);
-    ensureDir(PR_REQUEST_DIR);
 
-    const cliPath = exec("which playsafe");
-
+    const cliPath = execFile("which", ["playsafe"]);
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -185,9 +226,9 @@ export async function watch(argv) {
 </plist>`;
 
     writeFileSync(plistPath, plist);
-    const uid = exec("id -u");
-    try { exec(`launchctl bootout gui/${uid}/${PLIST_NAME}`); } catch {}
-    exec(`launchctl bootstrap gui/${uid} "${plistPath}"`);
+    const uid = execFile("id", ["-u"]);
+    try { execFile("launchctl", ["bootout", `gui/${uid}/${PLIST_NAME}`]); } catch {}
+    execFile("launchctl", ["bootstrap", `gui/${uid}`, plistPath]);
 
     console.log("PR watcher installed as launchd agent.");
     console.log(`Logs: ${logDir}/pr-watcher.stdout.log`);
@@ -195,17 +236,11 @@ export async function watch(argv) {
     return;
   }
 
-  // Foreground mode
-  ensureDir(PR_REQUEST_DIR);
-  console.log(`[${ts()}] Watching ${PR_REQUEST_DIR} for PR requests...`);
+  console.log(`[${ts()}] Watching staging remotes for playsafe branches...`);
   console.log("Press Ctrl+C to stop.\n");
 
-  processExisting();
+  processStagingRemotes();
+  setInterval(processStagingRemotes, 1000);
 
-  setInterval(() => {
-    processExisting();
-  }, 500);
-
-  // Keep the process alive
   await new Promise(() => {});
 }
